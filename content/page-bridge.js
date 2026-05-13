@@ -10,8 +10,12 @@
     window.postMessage({ source: SRC, ...data }, '*');
   }
 
+  // Strip Aura security prefix (e.g. ";/*ERROR*/") before parsing
   function safeJson(str) {
-    try { return typeof str === 'string' ? JSON.parse(str) : str; } catch { return null; }
+    if (typeof str !== 'string') return str ?? null;
+    const start = str.indexOf('{');
+    if (start === -1) return null;
+    try { return JSON.parse(start > 0 ? str.slice(start) : str); } catch { return null; }
   }
 
   // --- 1. Read globals immediately ---
@@ -64,10 +68,12 @@
     try {
       const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url ?? '');
       if (url.includes('/aura')) {
-        res.clone().json().then(json => {
+        res.clone().text().then(text => {
+          const json = safeJson(text);
+          if (!json) return;
           const out = {};
-          if (json?.context) out.auraContext = json.context;
-          if (json?.token)   out.auraToken   = String(json.token);
+          if (json.context) out.auraContext = json.context;
+          if (json.token)   out.auraToken   = String(json.token);
           if (out.auraContext || out.auraToken) post({ type: 'AURA_DATA', ...out });
         }).catch(() => {});
       }

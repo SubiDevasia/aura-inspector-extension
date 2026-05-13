@@ -34,7 +34,7 @@
         "*://*.my.salesforce.com/*"
       ],
       "js": ["content/context-extractor.js"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ],
   "web_accessible_resources": [
