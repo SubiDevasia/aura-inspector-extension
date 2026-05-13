@@ -181,6 +181,108 @@ main {
   border: 1px solid rgba(167, 139, 250, 0.3);
 }
 
+/* Findings badge */
+.badge-finding {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.text-muted { color: var(--text-muted); font-size: 11px; }
+
+/* Progress bar */
+.progress-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.progress-bar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+  width: 0%;
+}
+
+.progress-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+
+/* Scan results section */
+.results-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.results-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.results-duration {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+
+/* Accessible objects list */
+.obj-list {
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-field);
+}
+
+.obj-list::-webkit-scrollbar { width: 4px; }
+.obj-list::-webkit-scrollbar-track { background: transparent; }
+.obj-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.obj-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.obj-row:last-child { border-bottom: none; }
+
+.obj-name {
+  font-family: var(--mono);
+  color: var(--text);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+.obj-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #f87171;
+  font-weight: 600;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
 /* Run Scan button */
 #btn-scan {
   margin-top: 4px;

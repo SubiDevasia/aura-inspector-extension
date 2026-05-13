@@ -12,7 +12,7 @@
       <span class="logo">⚡</span>
       <h1>Aura Inspector</h1>
     </div>
-    <span class="version">v0.2.0</span>
+    <span class="version">v0.3.0</span>
   </header>
 
   <main>
@@ -41,15 +41,11 @@
         <span id="val-app-path" class="value mono"></span>
       </div>
       <div class="field">
-        <span class="label">App Name</span>
-        <span id="val-app-name" class="value"></span>
-      </div>
-      <div class="field">
         <span class="label">Detected via</span>
         <span id="val-via" class="value badge"></span>
       </div>
 
-      <!-- Chunk 2: Aura endpoint + context capture status -->
+      <!-- Aura endpoint + context capture -->
       <div class="section-divider"></div>
       <div class="field">
         <span class="label">Aura URL</span>
@@ -64,14 +60,49 @@
         <span id="val-token-status" class="value badge badge-pending">Pending</span>
       </div>
 
-      <!-- Auth (placeholder, Chunk 5) -->
+      <!-- Auth placeholder (Chunk 5) -->
       <div class="section-divider"></div>
       <div class="field">
         <span class="label">Auth</span>
         <span id="val-auth" class="value badge badge-pending">Checking...</span>
       </div>
 
+      <!-- Chunk 3: scan button -->
       <button id="btn-scan" disabled>Run Scan</button>
+
+      <!-- Chunk 3: scan progress -->
+      <div id="scan-progress" class="progress-row hidden">
+        <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+        <span id="progress-label" class="progress-label">Preparing…</span>
+      </div>
+
+      <!-- Chunk 3: scan results -->
+      <div id="scan-results" class="hidden">
+        <div class="section-divider"></div>
+        <div class="results-header">
+          <span class="results-title">Scan Results</span>
+          <span id="val-scan-duration" class="results-duration"></span>
+        </div>
+        <div class="field">
+          <span class="label">Objects</span>
+          <span id="val-objects-count" class="value"></span>
+        </div>
+        <div class="field">
+          <span class="label">Accessible</span>
+          <span id="val-accessible-count" class="value badge"></span>
+        </div>
+        <div id="row-bypass" class="field hidden">
+          <span class="label">Bypass</span>
+          <span id="val-bypass-count" class="value badge badge-finding"></span>
+        </div>
+        <div id="row-errors" class="field hidden">
+          <span class="label">Errors</span>
+          <span id="val-errors-count" class="value text-muted"></span>
+        </div>
+        <!-- Accessible objects list -->
+        <div id="accessible-list" class="obj-list hidden"></div>
+      </div>
+
     </div>
 
     <!-- Force enable toggle -->

@@ -1,3 +1,5 @@
+import { runCoreChecks } from './aura-checks.js';
+
 // Layer 1: known SF domain patterns
 const SF_PATTERNS = [
   /^https?:\/\/[^.]+\.my\.site\.com(\/|$)/,
@@ -61,19 +63,17 @@ async function clearBadge(tabId) {
   await chrome.action.setBadgeText({ tabId, text: '' });
 }
 
-// Inject context-extractor.js into a custom-domain tab after detection
 async function injectContextExtractor(tabId) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: false },
       files: ['content/context-extractor.js'],
     });
-  } catch {
-    // Tab not injectable (about:, chrome://, etc.) — silently ignore
-  }
+  } catch {}
 }
 
-// Layer 1: URL pattern match — highest priority, always overwrites
+// --- Detection layer handlers ---
+
 async function handleLayer1(tabId, url) {
   const base = parseSFSiteInfo(url);
   if (!base) return;
@@ -82,7 +82,6 @@ async function handleLayer1(tabId, url) {
   await setBadgeGreen(tabId);
 }
 
-// Layer 2: fingerprint from content script
 async function handleFingerprintDetection(tabId, msg) {
   const existing = await getTabInfo(tabId);
   if (existing?.detectedVia === 'url-pattern') return;
@@ -91,13 +90,12 @@ async function handleFingerprintDetection(tabId, msg) {
     const u = new URL(msg.url);
     const appPath = msg.appPath ?? '/';
     const appName = appPath === '/' ? '(custom domain)' : appPath.split('/').filter(Boolean)[0];
-    const auraEndpoint = buildAuraEndpoint(u.origin, appPath);
     await setTabInfo(tabId, {
       origin: u.origin,
       host: u.hostname,
       appPath,
       appName,
-      auraEndpoint,
+      auraEndpoint: buildAuraEndpoint(u.origin, appPath),
       detectedVia: 'fingerprint',
       markers: msg.markers,
     });
@@ -106,7 +104,6 @@ async function handleFingerprintDetection(tabId, msg) {
   } catch {}
 }
 
-// Layer 3: outbound network request to an Aura/SF endpoint
 async function handleNetworkDetection(tabId, requestUrl) {
   const existing = await getTabInfo(tabId);
   if (existing && ['url-pattern', 'fingerprint', 'network'].includes(existing.detectedVia)) return;
@@ -132,7 +129,6 @@ async function handleNetworkDetection(tabId, requestUrl) {
   } catch {}
 }
 
-// Layer 4: manual override from popup toggle
 async function handleManualOverride({ tabId, url, enabled }) {
   if (enabled) {
     try {
@@ -143,7 +139,6 @@ async function handleManualOverride({ tabId, url, enabled }) {
         appPath: '/',
         appName: '(manual override)',
         detectedVia: 'manual',
-        // No auraEndpoint — user must confirm the correct path
       });
       await setBadgeGreen(tabId);
       await injectContextExtractor(tabId);
@@ -154,22 +149,50 @@ async function handleManualOverride({ tabId, url, enabled }) {
   }
 }
 
-// Chunk 2: merge captured context/token into existing tab info
 async function handleContextCaptured(tabId, msg) {
   const existing = await getTabInfo(tabId);
   if (!existing) return;
 
   const updated = { ...existing };
-  // Endpoint: store if not already known
   if (msg.auraEndpoint && !updated.auraEndpoint) updated.auraEndpoint = msg.auraEndpoint;
-  // Context/token: always update with latest captured values
   if (msg.auraContext) updated.auraContext = msg.auraContext;
   if (msg.auraToken)   updated.auraToken   = msg.auraToken;
 
   await setTabInfo(tabId, updated);
 }
 
-// Called on tab navigation / activation
+// --- Chunk 3: scan orchestration ---
+
+async function handleRunScan(tabId) {
+  const info = await getTabInfo(tabId);
+  if (!info) return;
+  if (!info.auraEndpoint) return;
+  if (!info.auraContext)  return;
+
+  // Mark running (popup polls this)
+  await setTabInfo(tabId, { ...info, scanState: 'running', scanProgress: null, scanResult: null, scanError: null });
+
+  try {
+    const result = await runCoreChecks(
+      info.auraEndpoint,
+      info.auraContext,
+      info.auraToken ?? 'null',
+      async (progress) => {
+        const current = await getTabInfo(tabId);
+        if (current) await setTabInfo(tabId, { ...current, scanProgress: progress });
+      },
+    );
+
+    const current = await getTabInfo(tabId);
+    await setTabInfo(tabId, { ...current, scanState: 'done', scanResult: result, scanProgress: null });
+  } catch (err) {
+    const current = await getTabInfo(tabId);
+    await setTabInfo(tabId, { ...current, scanState: 'error', scanError: err.message, scanProgress: null });
+  }
+}
+
+// --- Tab lifecycle ---
+
 async function updateTab(tabId, url) {
   if (!url || url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('about:')) {
     await clearBadge(tabId);
@@ -203,9 +226,7 @@ async function updateTab(tabId, url) {
 // --- Event Listeners ---
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' && tab.url) {
-    updateTab(tabId, tab.url);
-  }
+  if (changeInfo.status === 'complete' && tab.url) updateTab(tabId, tab.url);
 });
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
@@ -220,32 +241,33 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // Chunk 1 — site fingerprint from detector.js
   if (msg.type === 'SF_DETECTED_BY_FINGERPRINT' && sender.tab?.id) {
     handleFingerprintDetection(sender.tab.id, msg);
     return false;
   }
 
-  // Chunk 1 — manual override from popup toggle
   if (msg.type === 'MANUAL_OVERRIDE') {
     handleManualOverride(msg).then(() => sendResponse({ ok: true }));
     return true;
   }
 
-  // Chunk 2 — context-extractor asks for stored tab info
   if (msg.type === 'GET_TAB_INFO' && sender.tab?.id) {
     getTabInfo(sender.tab.id).then(info => sendResponse({ info }));
     return true;
   }
 
-  // Chunk 2 — context-extractor reports captured Aura data
   if (msg.type === 'AURA_CONTEXT_CAPTURED' && sender.tab?.id) {
     handleContextCaptured(sender.tab.id, msg);
     return false;
   }
+
+  if (msg.type === 'RUN_SCAN') {
+    // Fire-and-forget: popup polls session storage for scanState changes
+    handleRunScan(msg.tabId);
+    return false;
+  }
 });
 
-// Layer 3: observe outbound requests from all tabs
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (details.tabId < 0) return;
