@@ -455,3 +455,34 @@ main {
 .progress-fill-auth {
   background: #3b82f6;
 }
+
+/* --- Chunk 6: export --- */
+
+.export-section {
+  padding-top: 2px;
+}
+
+.export-section.hidden { display: none; }
+
+.export-row {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-export {
+  flex: 1;
+  padding: 7px 0;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.btn-export:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}

@@ -113,9 +113,10 @@ function showFindingRow(rowId, valId, count, singular, plural) {
 }
 
 function renderResults(result) {
-  if (!result) { hide('scan-results'); return; }
+  if (!result) { hide('scan-results'); hide('export-section'); return; }
 
   show('scan-results');
+  show('export-section');
 
   setText('val-scan-duration', fmtDuration(result.finishedAt - result.startedAt));
   setText('val-objects-count', fmtCount(result.objectCount));
@@ -405,9 +406,91 @@ async function handleAuthScanClick() {
   startAuthPolling(currentTab.id);
 }
 
+// --- Chunk 6: export ---
+
+function buildReport(info) {
+  return {
+    generatedAt:  new Date().toISOString(),
+    site: {
+      host:         info.host,
+      appPath:      info.appPath,
+      detectedVia:  info.detectedVia,
+      auraEndpoint: info.auraEndpoint,
+    },
+    guestScan:  info.scanResult     ?? null,
+    authScan:   info.authScanResult ?? null,
+    diff:       info.authScanResult ? computeDiff(info.scanResult, info.authScanResult) : null,
+  };
+}
+
+function triggerDownload(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function slugDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+async function handleExportJSON() {
+  if (!currentTab) return;
+  const r    = await chrome.storage.session.get(`tab:${currentTab.id}`);
+  const info = r[`tab:${currentTab.id}`];
+  if (!info?.scanResult) return;
+  const filename = `aura-report-${info.host}-${slugDate()}.json`;
+  triggerDownload(JSON.stringify(buildReport(info), null, 2), filename, 'application/json');
+}
+
+async function handleExportCSV() {
+  if (!currentTab) return;
+  const r    = await chrome.storage.session.get(`tab:${currentTab.id}`);
+  const info = r[`tab:${currentTab.id}`];
+  if (!info?.scanResult) return;
+
+  const bypassSet   = new Set((info.scanResult.bypassWorks   ?? []).map(o => o.name));
+  const listViewSet = new Set((info.scanResult.listViews     ?? []).map(o => o.name));
+  const graphqlSet  = new Set((info.scanResult.graphqlBypass ?? []).map(o => o.name));
+  const guestNames  = new Set((info.scanResult.accessible    ?? []).map(o => o.name));
+
+  const rows = [['scan_type', 'object', 'records', 'bypass_2k', 'list_views', 'graphql_bypass', 'new_auth_access']];
+
+  for (const obj of (info.scanResult.accessible ?? [])) {
+    rows.push([
+      'guest',
+      obj.name,
+      obj.total,
+      bypassSet.has(obj.name)   ? 'yes' : 'no',
+      listViewSet.has(obj.name) ? 'yes' : 'no',
+      graphqlSet.has(obj.name)  ? 'yes' : 'no',
+      'no',
+    ]);
+  }
+
+  for (const obj of (info.authScanResult?.accessible ?? [])) {
+    if (!guestNames.has(obj.name)) {
+      rows.push(['auth_only', obj.name, obj.total, 'no', 'no', 'no', 'yes']);
+    }
+  }
+
+  for (const { label, path, status } of (info.scanResult.homeUrls ?? [])) {
+    rows.push(['admin_url', label, path, status, '', '', '']);
+  }
+
+  const csv      = rows.map(row => row.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  const filename = `aura-report-${info.host}-${slugDate()}.csv`;
+  triggerDownload(csv, filename, 'text/csv');
+}
+
 init();
 document.getElementById('btn-scan')?.addEventListener('click', handleScanClick);
 document.getElementById('btn-auth-scan')?.addEventListener('click', handleAuthScanClick);
 document.getElementById('btn-auto-cookie')?.addEventListener('click', handleAutoDetectCookie);
 document.getElementById('cookie-input')?.addEventListener('input', refreshAuthScanButton);
+document.getElementById('btn-export-json')?.addEventListener('click', handleExportJSON);
+document.getElementById('btn-export-csv')?.addEventListener('click', handleExportCSV);
 document.getElementById('force-enable-toggle')?.addEventListener('change', e => handleToggleChange(e.target.checked));
