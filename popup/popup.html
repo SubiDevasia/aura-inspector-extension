@@ -12,7 +12,7 @@
       <span class="logo">⚡</span>
       <h1>Aura Inspector</h1>
     </div>
-    <span class="version">v0.4.0</span>
+    <span class="version">v0.5.0</span>
   </header>
 
   <main>
@@ -60,14 +60,40 @@
         <span id="val-token-status" class="value badge badge-pending">Pending</span>
       </div>
 
-      <!-- Auth placeholder (Chunk 5) -->
+      <!-- Chunk 5: cookie / auth scan -->
       <div class="section-divider"></div>
-      <div class="field">
-        <span class="label">Auth</span>
-        <span id="val-auth" class="value badge badge-pending">Checking...</span>
+      <div class="cookie-row">
+        <span class="cookie-label">Session Cookie</span>
+        <button id="btn-auto-cookie" class="btn-secondary">Auto-detect</button>
+      </div>
+      <input type="password" id="cookie-input" class="cookie-input" placeholder="sid=XXXXXXXXXXXXXXXX…" autocomplete="off" spellcheck="false">
+      <button id="btn-auth-scan" disabled>Run Auth Scan</button>
+
+      <!-- Auth scan progress -->
+      <div id="auth-scan-progress" class="progress-row hidden">
+        <div class="progress-bar"><div id="auth-progress-fill" class="progress-fill progress-fill-auth"></div></div>
+        <span id="auth-progress-label" class="progress-label">Preparing…</span>
       </div>
 
-      <!-- Chunk 3: scan button -->
+      <!-- Auth scan results -->
+      <div id="auth-scan-results" class="hidden">
+        <div class="section-divider"></div>
+        <div class="results-header">
+          <span class="results-title">Auth Scan</span>
+          <span id="val-auth-scan-duration" class="results-duration"></span>
+        </div>
+        <div class="field">
+          <span class="label">New Access</span>
+          <span id="val-new-access" class="value badge"></span>
+        </div>
+        <div id="row-auth-selfreg" class="field hidden">
+          <span class="label">Self-Reg</span>
+          <span id="val-auth-selfreg" class="value badge"></span>
+        </div>
+        <div id="new-accessible-list" class="obj-list hidden"></div>
+      </div>
+
+      <!-- Guest scan button -->
       <button id="btn-scan" disabled>Run Scan</button>
 
       <!-- Chunk 3: scan progress -->

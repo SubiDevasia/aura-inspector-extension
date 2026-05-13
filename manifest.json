@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Aura Inspector Extension",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Security auditing tool for Salesforce Experience Cloud sites",
   "permissions": [
     "tabs",
@@ -9,6 +9,9 @@
     "activeTab",
     "webRequest",
     "scripting"
+  ],
+  "optional_permissions": [
+    "cookies"
   ],
   "host_permissions": [
     "<all_urls>"

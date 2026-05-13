@@ -161,7 +161,7 @@ async function handleContextCaptured(tabId, msg) {
   await setTabInfo(tabId, updated);
 }
 
-// --- Chunk 3: scan orchestration ---
+// --- Scan orchestration (guest + auth) ---
 
 async function handleRunScan(tabId) {
   const info = await getTabInfo(tabId);
@@ -188,6 +188,38 @@ async function handleRunScan(tabId) {
   } catch (err) {
     const current = await getTabInfo(tabId);
     await setTabInfo(tabId, { ...current, scanState: 'error', scanError: err.message, scanProgress: null });
+  }
+}
+
+async function handleRunAuthScan(tabId, cookieHeader) {
+  const info = await getTabInfo(tabId);
+  if (!info?.auraEndpoint || !info?.auraContext) return;
+
+  await setTabInfo(tabId, {
+    ...info,
+    authScanState: 'running',
+    authScanProgress: null,
+    authScanResult: null,
+    authScanError: null,
+  });
+
+  try {
+    const result = await runCoreChecks(
+      info.auraEndpoint,
+      info.auraContext,
+      info.auraToken ?? 'null',
+      async (progress) => {
+        const current = await getTabInfo(tabId);
+        if (current) await setTabInfo(tabId, { ...current, authScanProgress: progress });
+      },
+      cookieHeader,
+    );
+
+    const current = await getTabInfo(tabId);
+    await setTabInfo(tabId, { ...current, authScanState: 'done', authScanResult: result, authScanProgress: null });
+  } catch (err) {
+    const current = await getTabInfo(tabId);
+    await setTabInfo(tabId, { ...current, authScanState: 'error', authScanError: err.message, authScanProgress: null });
   }
 }
 
@@ -262,9 +294,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'RUN_SCAN') {
-    // Fire-and-forget: popup polls session storage for scanState changes
     handleRunScan(msg.tabId);
     return false;
+  }
+
+  if (msg.type === 'RUN_AUTH_SCAN') {
+    handleRunAuthScan(msg.tabId, msg.cookieHeader);
+    return false;
+  }
+
+  if (msg.type === 'GET_COOKIE') {
+    (async () => {
+      const info = await getTabInfo(msg.tabId);
+      if (!info?.origin) { sendResponse({ cookie: null }); return; }
+      try {
+        const cookie = await chrome.cookies.get({ url: info.origin, name: 'sid' });
+        sendResponse({ cookie: cookie ? `sid=${cookie.value}` : null });
+      } catch {
+        sendResponse({ cookie: null });
+      }
+    })();
+    return true;
   }
 });
 

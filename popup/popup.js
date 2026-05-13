@@ -5,8 +5,9 @@ const DETECTION_LABELS = {
   'manual':       'Manually enabled',
 };
 
-let currentTab   = null;
-let pollTimer    = null;
+let currentTab    = null;
+let pollTimer     = null;
+let authPollTimer = null;
 
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -52,18 +53,37 @@ function setScanButton(info) {
                   : 'Run Scan';
 }
 
-// --- Progress bar ---
+function setAuthScanButton(info) {
+  const btn = document.getElementById('btn-auth-scan');
+  if (!btn) return;
+  const hasCookie = !!(document.getElementById('cookie-input')?.value?.trim());
+  const canScan   = !!info?.auraContext && hasCookie;
+  const running   = info?.authScanState === 'running';
+
+  btn.disabled    = !canScan || running;
+  btn.textContent = running               ? 'Scanning…'
+                  : info?.authScanResult  ? 'Re-run Auth Scan'
+                  : 'Run Auth Scan';
+}
+
+// --- Progress bars ---
 
 function renderProgress(progress) {
   if (!progress) { hide('scan-progress'); return; }
-
   show('scan-progress');
-  const pct = (progress.total > 0)
-    ? Math.round((progress.done / progress.total) * 100)
-    : 0;
+  const pct = (progress.total > 0) ? Math.round((progress.done / progress.total) * 100) : 0;
   const fill = document.getElementById('progress-fill');
   if (fill) fill.style.width = pct + '%';
   setText('progress-label', progress.label ?? 'Running…');
+}
+
+function renderAuthProgress(progress) {
+  if (!progress) { hide('auth-scan-progress'); return; }
+  show('auth-scan-progress');
+  const pct = (progress.total > 0) ? Math.round((progress.done / progress.total) * 100) : 0;
+  const fill = document.getElementById('auth-progress-fill');
+  if (fill) fill.style.width = pct + '%';
+  setText('auth-progress-label', progress.label ?? 'Running…');
 }
 
 // --- Results rendering ---
@@ -162,6 +182,44 @@ function renderResults(result) {
     result.graphqlBypass?.length ?? 0, 'object bypasses via page 21', 'objects bypass via page 21');
 }
 
+// --- Auth diff + results ---
+
+function computeDiff(guestResult, authResult) {
+  if (!authResult || !guestResult) return { newAccess: [] };
+  const guestNames = new Set((guestResult.accessible ?? []).map(o => o.name));
+  const newAccess  = (authResult.accessible ?? []).filter(o => !guestNames.has(o.name));
+  return { newAccess };
+}
+
+function renderAuthResults(authResult, guestResult) {
+  if (!authResult) { hide('auth-scan-results'); return; }
+
+  show('auth-scan-results');
+  setText('val-auth-scan-duration', fmtDuration(authResult.finishedAt - authResult.startedAt));
+
+  const { newAccess } = computeDiff(guestResult, authResult);
+  const newEl = document.getElementById('val-new-access');
+  if (newEl) {
+    const count = newAccess.length;
+    newEl.textContent = count === 0 ? '0 — no new access' : `${count} new object${count > 1 ? 's' : ''}`;
+    newEl.className   = 'value badge ' + (count > 0 ? 'badge-finding' : 'badge-captured');
+  }
+  renderObjList('new-accessible-list', newAccess, 'total', i => fmtCount(i.total) + ' records');
+
+  const sr = authResult.selfReg;
+  if (sr) {
+    show('row-auth-selfreg');
+    const srEl = document.getElementById('val-auth-selfreg');
+    if (srEl) {
+      if (sr.enabled === true)  { srEl.textContent = '⚠ Enabled';     srEl.className = 'value badge badge-finding'; }
+      if (sr.enabled === false) { srEl.textContent = '✓ Not enabled'; srEl.className = 'value badge badge-captured'; }
+      if (sr.enabled === null)  { srEl.textContent = 'Inconclusive';  srEl.className = 'value badge badge-pending'; }
+    }
+  } else {
+    hide('row-auth-selfreg');
+  }
+}
+
 // --- Poll session storage while scan is running ---
 
 function startPolling(tabId) {
@@ -190,10 +248,33 @@ function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }
 
+function startAuthPolling(tabId) {
+  stopAuthPolling();
+  authPollTimer = setInterval(async () => {
+    const r    = await chrome.storage.session.get(`tab:${tabId}`);
+    const info = r[`tab:${tabId}`];
+    if (!info) { stopAuthPolling(); return; }
+
+    renderAuthProgress(info.authScanProgress ?? null);
+    setAuthScanButton(info);
+
+    if (info.authScanState !== 'running') {
+      stopAuthPolling();
+      hide('auth-scan-progress');
+      if (info.authScanState === 'done') renderAuthResults(info.authScanResult, info.scanResult);
+    }
+  }, 500);
+}
+
+function stopAuthPolling() {
+  if (authPollTimer) { clearInterval(authPollTimer); authPollTimer = null; }
+}
+
 // --- Main init ---
 
 async function init() {
   stopPolling();
+  stopAuthPolling();
   currentTab = await getActiveTab();
   if (!currentTab) { show('panel-none'); renderForceToggle(false, true); return; }
 
@@ -230,14 +311,26 @@ function renderSF(info) {
   renderBadge('val-token-status',   !!info.auraToken,   '✓ Captured', 'Pending');
 
   setScanButton(info);
+  setAuthScanButton(info);
 
-  // Restore scan state from session
+  // Restore guest scan state
   if (info.scanState === 'running') {
     renderProgress(info.scanProgress ?? null);
     startPolling(currentTab.id);
   } else {
     hide('scan-progress');
     if (info.scanState === 'done' && info.scanResult) renderResults(info.scanResult);
+  }
+
+  // Restore auth scan state
+  if (info.authScanState === 'running') {
+    renderAuthProgress(info.authScanProgress ?? null);
+    startAuthPolling(currentTab.id);
+  } else {
+    hide('auth-scan-progress');
+    if (info.authScanState === 'done' && info.authScanResult) {
+      renderAuthResults(info.authScanResult, info.scanResult);
+    }
   }
 
   const isManual = info.detectedVia === 'manual';
@@ -257,7 +350,6 @@ function renderForceToggle(checked, visible) {
 async function handleScanClick() {
   if (!currentTab) return;
   chrome.runtime.sendMessage({ type: 'RUN_SCAN', tabId: currentTab.id });
-  // Optimistic UI update; SW will set scanState='running' in storage
   const r    = await chrome.storage.session.get(`tab:${currentTab.id}`);
   const info = r[`tab:${currentTab.id}`];
   if (info) setScanButton({ ...info, scanState: 'running' });
@@ -276,6 +368,46 @@ async function handleToggleChange(checked) {
   await init();
 }
 
+async function handleAutoDetectCookie() {
+  let granted = false;
+  try {
+    granted = await chrome.permissions.request({ permissions: ['cookies'] });
+  } catch {
+    return;
+  }
+  if (!granted || !currentTab) return;
+
+  const r = await chrome.runtime.sendMessage({ type: 'GET_COOKIE', tabId: currentTab.id });
+  if (r?.cookie) {
+    document.getElementById('cookie-input').value = r.cookie;
+    refreshAuthScanButton();
+  }
+}
+
+function refreshAuthScanButton() {
+  if (!currentTab) return;
+  chrome.storage.session.get(`tab:${currentTab.id}`).then(r => {
+    const info = r[`tab:${currentTab.id}`] ?? {};
+    setAuthScanButton(info);
+  });
+}
+
+async function handleAuthScanClick() {
+  if (!currentTab) return;
+  const cookie = document.getElementById('cookie-input')?.value?.trim();
+  if (!cookie) return;
+
+  chrome.runtime.sendMessage({ type: 'RUN_AUTH_SCAN', tabId: currentTab.id, cookieHeader: cookie });
+  const r    = await chrome.storage.session.get(`tab:${currentTab.id}`);
+  const info = r[`tab:${currentTab.id}`];
+  if (info) setAuthScanButton({ ...info, authScanState: 'running' });
+  hide('auth-scan-results');
+  startAuthPolling(currentTab.id);
+}
+
 init();
 document.getElementById('btn-scan')?.addEventListener('click', handleScanClick);
+document.getElementById('btn-auth-scan')?.addEventListener('click', handleAuthScanClick);
+document.getElementById('btn-auto-cookie')?.addEventListener('click', handleAutoDetectCookie);
+document.getElementById('cookie-input')?.addEventListener('input', refreshAuthScanButton);
 document.getElementById('force-enable-toggle')?.addEventListener('change', e => handleToggleChange(e.target.checked));

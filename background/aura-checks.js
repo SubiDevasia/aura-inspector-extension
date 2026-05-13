@@ -1,4 +1,4 @@
-// Aura security checks — Chunks 3 & 4.
+// Aura security checks — Chunks 3, 4 & 5.
 // Pure functions: take (endpoint, context, token, ...) → structured results.
 // No chrome.* APIs. Called by service-worker.js.
 
@@ -10,15 +10,18 @@ const BATCH_SIZE = 100;
 // Low-level Aura POST
 // ---------------------------------------------------------------------------
 
-async function auraPost(endpoint, context, token, actions) {
+async function auraPost(endpoint, context, token, actions, cookieHeader = null) {
   const body = new URLSearchParams();
   body.set('message',      JSON.stringify({ actions }));
   body.set('aura.context', JSON.stringify(context));
   body.set('aura.token',   token ?? 'null');
 
+  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  if (cookieHeader) headers['Cookie'] = cookieHeader;
+
   const res = await fetch(endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers,
     body: body.toString(),
     credentials: 'omit',
   });
@@ -35,7 +38,7 @@ async function auraPost(endpoint, context, token, actions) {
 // Check 1: getConfigData
 // ---------------------------------------------------------------------------
 
-export async function checkGetConfigData(endpoint, context, token) {
+export async function checkGetConfigData(endpoint, context, token, cookieHeader = null) {
   const actions = [{
     id: '1;a',
     descriptor: 'serviceComponent://ui.force.components.controllers.hostConfig.HostConfigController/ACTION$getConfigData',
@@ -43,7 +46,7 @@ export async function checkGetConfigData(endpoint, context, token) {
     params: {},
   }];
 
-  const response = await auraPost(endpoint, context, token, actions);
+  const response = await auraPost(endpoint, context, token, actions, cookieHeader);
   const action   = response.actions?.[0];
 
   if (action?.state !== 'SUCCESS') {
@@ -80,7 +83,7 @@ function makeGetItemsAction(objName, extraParams = {}) {
   };
 }
 
-export async function checkGetItems(endpoint, context, token, objects, onBatchDone) {
+export async function checkGetItems(endpoint, context, token, objects, onBatchDone, cookieHeader = null) {
   const results = {};
 
   for (let i = 0; i < objects.length; i += BATCH_SIZE) {
@@ -88,7 +91,7 @@ export async function checkGetItems(endpoint, context, token, objects, onBatchDo
     const actions = batch.map(obj => makeGetItemsAction(obj));
 
     try {
-      const response = await auraPost(endpoint, context, token, actions);
+      const response = await auraPost(endpoint, context, token, actions, cookieHeader);
       for (const action of (response.actions ?? [])) {
         const name = action.id;
         if (action.state === 'SUCCESS') {
@@ -115,7 +118,7 @@ export async function checkGetItems(endpoint, context, token, objects, onBatchDo
 // Check 3: sortBy bypass (objects with total > 2000)
 // ---------------------------------------------------------------------------
 
-export async function checkSortByBypass(endpoint, context, token, getItemsResults) {
+export async function checkSortByBypass(endpoint, context, token, getItemsResults, cookieHeader = null) {
   const targets = Object.entries(getItemsResults)
     .filter(([, r]) => r.state === 'SUCCESS' && r.total > 2000)
     .map(([name]) => name);
@@ -129,7 +132,7 @@ export async function checkSortByBypass(endpoint, context, token, getItemsResult
     const actions = batch.map(obj => makeGetItemsAction(obj, { sortBy: 'Id' }));
 
     try {
-      const response = await auraPost(endpoint, context, token, actions);
+      const response = await auraPost(endpoint, context, token, actions, cookieHeader);
       for (const action of (response.actions ?? [])) {
         const name  = action.id;
         const total = action.returnValue?.total ?? null;
@@ -151,7 +154,7 @@ export async function checkSortByBypass(endpoint, context, token, getItemsResult
 // Check 4: getInitialListViews (batched)
 // ---------------------------------------------------------------------------
 
-export async function checkGetInitialListViews(endpoint, context, token, objects, onBatchDone) {
+export async function checkGetInitialListViews(endpoint, context, token, objects, onBatchDone, cookieHeader = null) {
   const results = {};
 
   for (let i = 0; i < objects.length; i += BATCH_SIZE) {
@@ -164,14 +167,13 @@ export async function checkGetInitialListViews(endpoint, context, token, objects
     }));
 
     try {
-      const response = await auraPost(endpoint, context, token, actions);
+      const response = await auraPost(endpoint, context, token, actions, cookieHeader);
       for (const action of (response.actions ?? [])) {
         const name      = action.id;
         const listViews = action.returnValue?.listViews ?? [];
         results[name] = {
           state: action.state,
           count: action.state === 'SUCCESS' ? listViews.length : 0,
-          // Store only id + label to keep session storage lean
           views: listViews.slice(0, 20).map(lv => ({ id: lv.id, label: lv.label })),
         };
       }
@@ -189,14 +191,17 @@ export async function checkGetInitialListViews(endpoint, context, token, objects
 // Check 5: Home URL enumeration (unauthenticated HEAD probes)
 // ---------------------------------------------------------------------------
 
-export async function checkHomeUrls(origin) {
+export async function checkHomeUrls(origin, cookieHeader = null) {
   const results = [];
 
   for (const { path, label } of HOME_URL_PROBES) {
     const url = origin + path;
     try {
+      const headers = {};
+      if (cookieHeader) headers['Cookie'] = cookieHeader;
       const res = await fetch(url, {
         method:      'HEAD',
+        headers,
         credentials: 'omit',
         redirect:    'follow',
       });
@@ -218,12 +223,10 @@ function interpretSelfReg(action) {
 
   const msg = (action.error?.[0]?.message ?? '').toLowerCase();
 
-  // Definitive "not enabled" signals
   if (/self.?registration is not enabled|community self.?registration/.test(msg)) {
     return { enabled: false, evidence: action.error?.[0]?.message };
   }
 
-  // Signals that prove registration IS enabled (error was about data, not the feature)
   if (/already registered|already exists|password|invalid email|username|required field/.test(msg)) {
     return { enabled: true, evidence: action.error?.[0]?.message };
   }
@@ -231,7 +234,7 @@ function interpretSelfReg(action) {
   return { enabled: null, evidence: action.error?.[0]?.message ?? `state=${action.state}` };
 }
 
-export async function checkSelfRegistration(endpoint, context, token) {
+export async function checkSelfRegistration(endpoint, context, token, cookieHeader = null) {
   const probeEmail = `aura-probe-${Date.now()}@aura-inspector-probe.invalid`;
 
   const actions = [{
@@ -250,12 +253,11 @@ export async function checkSelfRegistration(endpoint, context, token) {
   }];
 
   try {
-    const response = await auraPost(endpoint, context, token, actions);
+    const response = await auraPost(endpoint, context, token, actions, cookieHeader);
     const action   = response.actions?.[0];
     if (!action) return { state: 'ERROR', enabled: null, evidence: 'No action in response' };
     return { state: action.state, ...interpretSelfReg(action) };
   } catch (err) {
-    // 404 on the controller → feature not present on this community
     return { state: 'ERROR', enabled: false, evidence: err.message };
   }
 }
@@ -264,8 +266,7 @@ export async function checkSelfRegistration(endpoint, context, token) {
 // Check 7: GraphQL / cursor-page bypass (currentPage:20 on accessible objects)
 // ---------------------------------------------------------------------------
 
-export async function checkGraphQLBypass(endpoint, context, token, accessibleObjects) {
-  // Only probe objects confirmed accessible with large record counts
+export async function checkGraphQLBypass(endpoint, context, token, accessibleObjects, cookieHeader = null) {
   const targets = accessibleObjects
     .filter(obj => obj.total > 2000)
     .slice(0, 10)
@@ -278,12 +279,12 @@ export async function checkGraphQLBypass(endpoint, context, token, accessibleObj
   for (let i = 0; i < targets.length; i += BATCH_SIZE) {
     const batch   = targets.slice(i, i + BATCH_SIZE);
     const actions = batch.map(obj => makeGetItemsAction(obj, {
-      currentPage: 20, // page 21 → records 2001-2100 if bypass works
+      currentPage: 20,
       getCount:    false,
     }));
 
     try {
-      const response = await auraPost(endpoint, context, token, actions);
+      const response = await auraPost(endpoint, context, token, actions, cookieHeader);
       for (const action of (response.actions ?? [])) {
         const records = action.returnValue?.records ?? [];
         bypass.push({
@@ -305,13 +306,13 @@ export async function checkGraphQLBypass(endpoint, context, token, accessibleObj
 // Orchestrator
 // ---------------------------------------------------------------------------
 
-export async function runCoreChecks(endpoint, context, token, onProgress) {
+export async function runCoreChecks(endpoint, context, token, onProgress, cookieHeader = null) {
   const startedAt = Date.now();
   const origin    = new URL(endpoint).origin;
 
   // Check 1
   onProgress?.({ phase: 'getConfigData', done: 0, total: 1, label: 'Fetching object list…' });
-  const configData = await checkGetConfigData(endpoint, context, token);
+  const configData = await checkGetConfigData(endpoint, context, token, cookieHeader);
 
   if (configData.state !== 'SUCCESS' || configData.objects.length === 0) {
     return {
@@ -328,25 +329,27 @@ export async function runCoreChecks(endpoint, context, token, onProgress) {
   const getItems = await checkGetItems(
     endpoint, context, token, objects,
     (done, total) => onProgress?.({ phase: 'getItems', done, total, label: `Probing objects: ${done}/${total}` }),
+    cookieHeader,
   );
 
   // Check 3
   onProgress?.({ phase: 'sortBy', done: 0, total: 1, label: 'Testing sortBy bypass…' });
-  const sortByBypass = await checkSortByBypass(endpoint, context, token, getItems);
+  const sortByBypass = await checkSortByBypass(endpoint, context, token, getItems, cookieHeader);
 
   // Check 4
   const listViewsRaw = await checkGetInitialListViews(
     endpoint, context, token, objects,
     (done, total) => onProgress?.({ phase: 'listViews', done, total, label: `Checking list views: ${done}/${total}` }),
+    cookieHeader,
   );
 
   // Check 5
   onProgress?.({ phase: 'homeUrls', done: 0, total: HOME_URL_PROBES.length, label: 'Probing admin URLs…' });
-  const homeUrlsRaw = await checkHomeUrls(origin);
+  const homeUrlsRaw = await checkHomeUrls(origin, cookieHeader);
 
   // Check 6
   onProgress?.({ phase: 'selfReg', done: 0, total: 1, label: 'Testing self-registration…' });
-  const selfReg = await checkSelfRegistration(endpoint, context, token);
+  const selfReg = await checkSelfRegistration(endpoint, context, token, cookieHeader);
 
   // Build accessible list for Check 7
   const accessible = Object.entries(getItems)
@@ -356,7 +359,7 @@ export async function runCoreChecks(endpoint, context, token, onProgress) {
 
   // Check 7
   onProgress?.({ phase: 'graphql', done: 0, total: 1, label: 'Testing GraphQL bypass…' });
-  const graphqlBypassRaw = await checkGraphQLBypass(endpoint, context, token, accessible);
+  const graphqlBypassRaw = await checkGraphQLBypass(endpoint, context, token, accessible, cookieHeader);
 
   // Compact summaries
   const errors = Object.entries(getItems)
@@ -372,7 +375,7 @@ export async function runCoreChecks(endpoint, context, token, onProgress) {
     .map(([name, r]) => ({ name, count: r.count }))
     .sort((a, b) => b.count - a.count);
 
-  const homeUrls  = homeUrlsRaw.filter(h => h.exposed);
+  const homeUrls     = homeUrlsRaw.filter(h => h.exposed);
   const graphqlBypass = graphqlBypassRaw.filter(r => r.bypassWorks);
 
   return {

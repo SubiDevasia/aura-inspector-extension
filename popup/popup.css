@@ -370,3 +370,88 @@ main {
   transform: translateX(16px);
   background: #a78bfa;
 }
+
+/* --- Chunk 5: cookie input + auth scan --- */
+
+.cookie-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cookie-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.cookie-input {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--bg-field);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.cookie-input:focus {
+  border-color: #3b82f6;
+}
+
+.cookie-input::placeholder {
+  color: var(--text-muted);
+}
+
+.btn-secondary {
+  padding: 4px 10px;
+  background: transparent;
+  color: #3b82f6;
+  border: 1px solid #3b82f6;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-secondary:hover {
+  background: rgba(59, 130, 246, 0.12);
+}
+
+#btn-auth-scan {
+  margin-top: 4px;
+  padding: 9px 0;
+  width: 100%;
+  background: #3b82f6;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  transition: background 0.15s;
+}
+
+#btn-auth-scan:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+#btn-auth-scan:disabled {
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  cursor: not-allowed;
+}
+
+.progress-fill-auth {
+  background: #3b82f6;
+}
