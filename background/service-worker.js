@@ -169,8 +169,10 @@ async function handleRunScan(tabId) {
   if (!info.auraEndpoint) return;
   if (!info.auraContext)  return;
 
-  // Mark running (popup polls this)
   await setTabInfo(tabId, { ...info, scanState: 'running', scanProgress: null, scanResult: null, scanError: null });
+
+  // Keep SW alive during long scans (MV3 SW may sleep after ~30s of inactivity)
+  const keepAlive = setInterval(() => chrome.storage.session.get('__ka__'), 20_000);
 
   try {
     const result = await runCoreChecks(
@@ -188,6 +190,8 @@ async function handleRunScan(tabId) {
   } catch (err) {
     const current = await getTabInfo(tabId);
     await setTabInfo(tabId, { ...current, scanState: 'error', scanError: err.message, scanProgress: null });
+  } finally {
+    clearInterval(keepAlive);
   }
 }
 
@@ -202,6 +206,8 @@ async function handleRunAuthScan(tabId, cookieHeader) {
     authScanResult: null,
     authScanError: null,
   });
+
+  const keepAlive = setInterval(() => chrome.storage.session.get('__ka__'), 20_000);
 
   try {
     const result = await runCoreChecks(
@@ -220,6 +226,8 @@ async function handleRunAuthScan(tabId, cookieHeader) {
   } catch (err) {
     const current = await getTabInfo(tabId);
     await setTabInfo(tabId, { ...current, authScanState: 'error', authScanError: err.message, authScanProgress: null });
+  } finally {
+    clearInterval(keepAlive);
   }
 }
 

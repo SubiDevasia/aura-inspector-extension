@@ -1,13 +1,18 @@
-// Aura security checks — Chunks 3, 4 & 5.
+// Aura security checks — Chunks 3, 4, 5 & 7.
 // Pure functions: take (endpoint, context, token, ...) → structured results.
 // No chrome.* APIs. Called by service-worker.js.
 
 import { HOME_URL_PROBES } from './home-url-probes.js';
 
-const BATCH_SIZE = 100;
+const BATCH_SIZE        = 100;
+const REQUEST_TIMEOUT   = 15_000;  // ms — per Aura POST
+const PROBE_TIMEOUT     = 10_000;  // ms — per HEAD probe
+const BATCH_DELAY       = 200;     // ms — between batches (rate limit)
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ---------------------------------------------------------------------------
-// Low-level Aura POST
+// Low-level Aura POST  (with timeout)
 // ---------------------------------------------------------------------------
 
 async function auraPost(endpoint, context, token, actions, cookieHeader = null) {
@@ -19,19 +24,27 @@ async function auraPost(endpoint, context, token, actions, cookieHeader = null) 
   const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
   if (cookieHeader) headers['Cookie'] = cookieHeader;
 
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers,
-    body: body.toString(),
-    credentials: 'omit',
-  });
+  const controller = new AbortController();
+  const timer      = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body:        body.toString(),
+      credentials: 'omit',
+      signal:      controller.signal,
+    });
 
-  const text = await res.text();
-  const jsonStart = text.indexOf('{');
-  if (jsonStart === -1) throw new Error(`Unexpected Aura response: ${text.slice(0, 80)}`);
-  return JSON.parse(text.slice(jsonStart));
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+    const text = await res.text();
+    const jsonStart = text.indexOf('{');
+    if (jsonStart === -1) throw new Error(`Unexpected Aura response: ${text.slice(0, 80)}`);
+    return JSON.parse(text.slice(jsonStart));
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +75,7 @@ export async function checkGetConfigData(endpoint, context, token, cookieHeader 
 }
 
 // ---------------------------------------------------------------------------
-// Check 2: getItems (batched)
+// Check 2: getItems (batched + rate-limited)
 // ---------------------------------------------------------------------------
 
 function makeGetItemsAction(objName, extraParams = {}) {
@@ -109,13 +122,14 @@ export async function checkGetItems(endpoint, context, token, objects, onBatchDo
     }
 
     onBatchDone?.(i + batch.length, objects.length);
+    if (i + BATCH_SIZE < objects.length) await sleep(BATCH_DELAY);
   }
 
   return results;
 }
 
 // ---------------------------------------------------------------------------
-// Check 3: sortBy bypass (objects with total > 2000)
+// Check 3: sortBy bypass (rate-limited)
 // ---------------------------------------------------------------------------
 
 export async function checkSortByBypass(endpoint, context, token, getItemsResults, cookieHeader = null) {
@@ -145,13 +159,15 @@ export async function checkSortByBypass(endpoint, context, token, getItemsResult
     } catch (err) {
       for (const obj of batch) bypass[obj] = { state: 'ERROR', error: err.message };
     }
+
+    if (i + BATCH_SIZE < targets.length) await sleep(BATCH_DELAY);
   }
 
   return bypass;
 }
 
 // ---------------------------------------------------------------------------
-// Check 4: getInitialListViews (batched)
+// Check 4: getInitialListViews (batched + rate-limited)
 // ---------------------------------------------------------------------------
 
 export async function checkGetInitialListViews(endpoint, context, token, objects, onBatchDone, cookieHeader = null) {
@@ -182,20 +198,24 @@ export async function checkGetInitialListViews(endpoint, context, token, objects
     }
 
     onBatchDone?.(i + batch.length, objects.length);
+    if (i + BATCH_SIZE < objects.length) await sleep(BATCH_DELAY);
   }
 
   return results;
 }
 
 // ---------------------------------------------------------------------------
-// Check 5: Home URL enumeration (unauthenticated HEAD probes)
+// Check 5: Home URL enumeration (with per-probe timeout)
 // ---------------------------------------------------------------------------
 
 export async function checkHomeUrls(origin, cookieHeader = null) {
   const results = [];
 
   for (const { path, label } of HOME_URL_PROBES) {
-    const url = origin + path;
+    const url        = origin + path;
+    const controller = new AbortController();
+    const timer      = setTimeout(() => controller.abort(), PROBE_TIMEOUT);
+
     try {
       const headers = {};
       if (cookieHeader) headers['Cookie'] = cookieHeader;
@@ -204,10 +224,13 @@ export async function checkHomeUrls(origin, cookieHeader = null) {
         headers,
         credentials: 'omit',
         redirect:    'follow',
+        signal:      controller.signal,
       });
       results.push({ path, label, url, status: res.status, exposed: res.status === 200 });
     } catch {
       results.push({ path, label, url, status: null, exposed: false });
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -263,7 +286,7 @@ export async function checkSelfRegistration(endpoint, context, token, cookieHead
 }
 
 // ---------------------------------------------------------------------------
-// Check 7: GraphQL / cursor-page bypass (currentPage:20 on accessible objects)
+// Check 7: GraphQL / cursor-page bypass (rate-limited)
 // ---------------------------------------------------------------------------
 
 export async function checkGraphQLBypass(endpoint, context, token, accessibleObjects, cookieHeader = null) {
@@ -297,6 +320,8 @@ export async function checkGraphQLBypass(endpoint, context, token, accessibleObj
     } catch (err) {
       for (const obj of batch) bypass.push({ name: obj, state: 'ERROR', bypassWorks: false });
     }
+
+    if (i + BATCH_SIZE < targets.length) await sleep(BATCH_DELAY);
   }
 
   return bypass;
@@ -375,7 +400,7 @@ export async function runCoreChecks(endpoint, context, token, onProgress, cookie
     .map(([name, r]) => ({ name, count: r.count }))
     .sort((a, b) => b.count - a.count);
 
-  const homeUrls     = homeUrlsRaw.filter(h => h.exposed);
+  const homeUrls      = homeUrlsRaw.filter(h => h.exposed);
   const graphqlBypass = graphqlBypassRaw.filter(r => r.bypassWorks);
 
   return {
