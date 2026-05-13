@@ -12,7 +12,7 @@
       <span class="logo">⚡</span>
       <h1>Aura Inspector</h1>
     </div>
-    <span class="version">v0.3.0</span>
+    <span class="version">v0.4.0</span>
   </header>
 
   <main>
@@ -99,8 +99,29 @@
           <span class="label">Errors</span>
           <span id="val-errors-count" class="value text-muted"></span>
         </div>
+        <!-- Chunk 4 extended check results -->
+        <div id="row-listviews" class="field hidden">
+          <span class="label">List Views</span>
+          <span id="val-listviews-count" class="value badge badge-finding"></span>
+        </div>
+        <div id="row-homeurls" class="field hidden">
+          <span class="label">Admin URLs</span>
+          <span id="val-homeurls-count" class="value badge badge-finding"></span>
+        </div>
+        <div id="row-selfreg" class="field hidden">
+          <span class="label">Self-Reg</span>
+          <span id="val-selfreg" class="value badge"></span>
+        </div>
+        <div id="row-graphql" class="field hidden">
+          <span class="label">GraphQL</span>
+          <span id="val-graphql-count" class="value badge badge-finding"></span>
+        </div>
+
         <!-- Accessible objects list -->
         <div id="accessible-list" class="obj-list hidden"></div>
+
+        <!-- Exposed admin URL list -->
+        <div id="homeurl-list" class="obj-list hidden"></div>
       </div>
 
     </div>

@@ -1,8 +1,10 @@
-// Chunk 3: Core Aura security checks — getConfigData, getItems, sortBy bypass
-// Pure functions: take (endpoint, context, token) → return structured results.
-// Called by service-worker.js; no chrome.* APIs used here.
+// Aura security checks — Chunks 3 & 4.
+// Pure functions: take (endpoint, context, token, ...) → structured results.
+// No chrome.* APIs. Called by service-worker.js.
 
-const BATCH_SIZE = 100; // Aura supports up to 100 actions per request
+import { HOME_URL_PROBES } from './home-url-probes.js';
+
+const BATCH_SIZE = 100;
 
 // ---------------------------------------------------------------------------
 // Low-level Aura POST
@@ -18,20 +20,19 @@ async function auraPost(endpoint, context, token, actions) {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
-    credentials: 'omit', // guest context; Chunk 5 adds cookie support
+    credentials: 'omit',
   });
 
   if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
 
   const text = await res.text();
-  // Aura sometimes prepends /*-secure-community-protect;...–*/ before JSON
   const jsonStart = text.indexOf('{');
   if (jsonStart === -1) throw new Error(`Unexpected Aura response: ${text.slice(0, 80)}`);
   return JSON.parse(text.slice(jsonStart));
 }
 
 // ---------------------------------------------------------------------------
-// Check 1: getConfigData — enumerate all objects the site exposes
+// Check 1: getConfigData
 // ---------------------------------------------------------------------------
 
 export async function checkGetConfigData(endpoint, context, token) {
@@ -58,7 +59,7 @@ export async function checkGetConfigData(endpoint, context, token) {
 }
 
 // ---------------------------------------------------------------------------
-// Check 2: getItems — probe record access per object, batched 100/request
+// Check 2: getItems (batched)
 // ---------------------------------------------------------------------------
 
 function makeGetItemsAction(objName, extraParams = {}) {
@@ -67,12 +68,12 @@ function makeGetItemsAction(objName, extraParams = {}) {
     descriptor: 'serviceComponent://ui.force.components.controllers.lists.selectableListDataProvider.SelectableListDataProviderController/ACTION$getItems',
     callingDescriptor: 'UNKNOWN',
     params: {
-      entityNameOrId: objName,
-      layoutType:     'FULL',
-      pageSize:       100,
-      currentPage:    0,
-      useTimeout:     false,
-      getCount:       true,
+      entityNameOrId:   objName,
+      layoutType:       'FULL',
+      pageSize:         100,
+      currentPage:      0,
+      useTimeout:       false,
+      getCount:         true,
       enableRowActions: false,
       ...extraParams,
     },
@@ -80,7 +81,7 @@ function makeGetItemsAction(objName, extraParams = {}) {
 }
 
 export async function checkGetItems(endpoint, context, token, objects, onBatchDone) {
-  const results = {}; // objName → { state, total?, error? }
+  const results = {};
 
   for (let i = 0; i < objects.length; i += BATCH_SIZE) {
     const batch   = objects.slice(i, i + BATCH_SIZE);
@@ -91,9 +92,8 @@ export async function checkGetItems(endpoint, context, token, objects, onBatchDo
       for (const action of (response.actions ?? [])) {
         const name = action.id;
         if (action.state === 'SUCCESS') {
-          const rv    = action.returnValue ?? {};
-          const total = rv.total ?? rv.records?.length ?? 0;
-          results[name] = { state: 'SUCCESS', total };
+          const rv = action.returnValue ?? {};
+          results[name] = { state: 'SUCCESS', total: rv.total ?? rv.records?.length ?? 0 };
         } else {
           results[name] = {
             state: action.state,
@@ -105,14 +105,14 @@ export async function checkGetItems(endpoint, context, token, objects, onBatchDo
       for (const obj of batch) results[obj] = { state: 'ERROR', error: err.message };
     }
 
-    if (onBatchDone) onBatchDone(i + batch.length, objects.length);
+    onBatchDone?.(i + batch.length, objects.length);
   }
 
   return results;
 }
 
 // ---------------------------------------------------------------------------
-// Check 3: sortBy bypass — re-probe objects with total > 2000
+// Check 3: sortBy bypass (objects with total > 2000)
 // ---------------------------------------------------------------------------
 
 export async function checkSortByBypass(endpoint, context, token, getItemsResults) {
@@ -148,27 +148,177 @@ export async function checkSortByBypass(endpoint, context, token, getItemsResult
 }
 
 // ---------------------------------------------------------------------------
-// Orchestrator — runs all three checks and returns a compact summary
+// Check 4: getInitialListViews (batched)
+// ---------------------------------------------------------------------------
+
+export async function checkGetInitialListViews(endpoint, context, token, objects, onBatchDone) {
+  const results = {};
+
+  for (let i = 0; i < objects.length; i += BATCH_SIZE) {
+    const batch   = objects.slice(i, i + BATCH_SIZE);
+    const actions = batch.map(obj => ({
+      id: obj,
+      descriptor: 'serviceComponent://ui.force.components.controllers.lists.listViewPickerDataProvider.ListViewPickerDataProviderController/ACTION$getInitialListViews',
+      callingDescriptor: 'UNKNOWN',
+      params: { objectApiName: obj },
+    }));
+
+    try {
+      const response = await auraPost(endpoint, context, token, actions);
+      for (const action of (response.actions ?? [])) {
+        const name      = action.id;
+        const listViews = action.returnValue?.listViews ?? [];
+        results[name] = {
+          state: action.state,
+          count: action.state === 'SUCCESS' ? listViews.length : 0,
+          // Store only id + label to keep session storage lean
+          views: listViews.slice(0, 20).map(lv => ({ id: lv.id, label: lv.label })),
+        };
+      }
+    } catch (err) {
+      for (const obj of batch) results[obj] = { state: 'ERROR', count: 0 };
+    }
+
+    onBatchDone?.(i + batch.length, objects.length);
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Check 5: Home URL enumeration (unauthenticated HEAD probes)
+// ---------------------------------------------------------------------------
+
+export async function checkHomeUrls(origin) {
+  const results = [];
+
+  for (const { path, label } of HOME_URL_PROBES) {
+    const url = origin + path;
+    try {
+      const res = await fetch(url, {
+        method:      'HEAD',
+        credentials: 'omit',
+        redirect:    'follow',
+      });
+      results.push({ path, label, url, status: res.status, exposed: res.status === 200 });
+    } catch {
+      results.push({ path, label, url, status: null, exposed: false });
+    }
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Check 6: Self-registration probe
+// ---------------------------------------------------------------------------
+
+function interpretSelfReg(action) {
+  if (action.state === 'SUCCESS') return { enabled: true, evidence: 'Action returned SUCCESS' };
+
+  const msg = (action.error?.[0]?.message ?? '').toLowerCase();
+
+  // Definitive "not enabled" signals
+  if (/self.?registration is not enabled|community self.?registration/.test(msg)) {
+    return { enabled: false, evidence: action.error?.[0]?.message };
+  }
+
+  // Signals that prove registration IS enabled (error was about data, not the feature)
+  if (/already registered|already exists|password|invalid email|username|required field/.test(msg)) {
+    return { enabled: true, evidence: action.error?.[0]?.message };
+  }
+
+  return { enabled: null, evidence: action.error?.[0]?.message ?? `state=${action.state}` };
+}
+
+export async function checkSelfRegistration(endpoint, context, token) {
+  const probeEmail = `aura-probe-${Date.now()}@aura-inspector-probe.invalid`;
+
+  const actions = [{
+    id: '1;a',
+    descriptor: 'apex://LightningLoginFormController/ACTION$selfRegister',
+    callingDescriptor: 'UNKNOWN',
+    params: {
+      regConfirmUrl:  null,
+      firstName:      'AuraInspector',
+      lastName:       'Probe',
+      email:          probeEmail,
+      password:       'AuraInspect0r!Probe',
+      confirmPassword:'AuraInspect0r!Probe',
+      extraFields:    [],
+    },
+  }];
+
+  try {
+    const response = await auraPost(endpoint, context, token, actions);
+    const action   = response.actions?.[0];
+    if (!action) return { state: 'ERROR', enabled: null, evidence: 'No action in response' };
+    return { state: action.state, ...interpretSelfReg(action) };
+  } catch (err) {
+    // 404 on the controller → feature not present on this community
+    return { state: 'ERROR', enabled: false, evidence: err.message };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Check 7: GraphQL / cursor-page bypass (currentPage:20 on accessible objects)
+// ---------------------------------------------------------------------------
+
+export async function checkGraphQLBypass(endpoint, context, token, accessibleObjects) {
+  // Only probe objects confirmed accessible with large record counts
+  const targets = accessibleObjects
+    .filter(obj => obj.total > 2000)
+    .slice(0, 10)
+    .map(obj => obj.name);
+
+  if (targets.length === 0) return [];
+
+  const bypass = [];
+
+  for (let i = 0; i < targets.length; i += BATCH_SIZE) {
+    const batch   = targets.slice(i, i + BATCH_SIZE);
+    const actions = batch.map(obj => makeGetItemsAction(obj, {
+      currentPage: 20, // page 21 → records 2001-2100 if bypass works
+      getCount:    false,
+    }));
+
+    try {
+      const response = await auraPost(endpoint, context, token, actions);
+      for (const action of (response.actions ?? [])) {
+        const records = action.returnValue?.records ?? [];
+        bypass.push({
+          name:         action.id,
+          state:        action.state,
+          recordsFound: records.length,
+          bypassWorks:  action.state === 'SUCCESS' && records.length > 0,
+        });
+      }
+    } catch (err) {
+      for (const obj of batch) bypass.push({ name: obj, state: 'ERROR', bypassWorks: false });
+    }
+  }
+
+  return bypass;
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator
 // ---------------------------------------------------------------------------
 
 export async function runCoreChecks(endpoint, context, token, onProgress) {
   const startedAt = Date.now();
+  const origin    = new URL(endpoint).origin;
 
   // Check 1
-  onProgress?.({ phase: 'getConfigData', done: 0, total: 1 });
+  onProgress?.({ phase: 'getConfigData', done: 0, total: 1, label: 'Fetching object list…' });
   const configData = await checkGetConfigData(endpoint, context, token);
 
   if (configData.state !== 'SUCCESS' || configData.objects.length === 0) {
     return {
-      startedAt,
-      finishedAt:      Date.now(),
-      endpoint,
-      objectCount:     0,
-      accessible:      [],
-      errors:          [],
-      bypassWorks:     [],
-      configDataState: configData.state,
-      configDataError: configData.error,
+      startedAt, finishedAt: Date.now(), endpoint, objectCount: 0,
+      accessible: [], errors: [], bypassWorks: [],
+      listViews: [], homeUrls: [], selfReg: null, graphqlBypass: [],
+      configDataState: configData.state, configDataError: configData.error,
     };
   }
 
@@ -177,18 +327,38 @@ export async function runCoreChecks(endpoint, context, token, onProgress) {
   // Check 2
   const getItems = await checkGetItems(
     endpoint, context, token, objects,
-    (done, total) => onProgress?.({ phase: 'getItems', done, total }),
+    (done, total) => onProgress?.({ phase: 'getItems', done, total, label: `Probing objects: ${done}/${total}` }),
   );
 
   // Check 3
+  onProgress?.({ phase: 'sortBy', done: 0, total: 1, label: 'Testing sortBy bypass…' });
   const sortByBypass = await checkSortByBypass(endpoint, context, token, getItems);
 
-  // Compact summary (avoid storing raw records in session storage)
+  // Check 4
+  const listViewsRaw = await checkGetInitialListViews(
+    endpoint, context, token, objects,
+    (done, total) => onProgress?.({ phase: 'listViews', done, total, label: `Checking list views: ${done}/${total}` }),
+  );
+
+  // Check 5
+  onProgress?.({ phase: 'homeUrls', done: 0, total: HOME_URL_PROBES.length, label: 'Probing admin URLs…' });
+  const homeUrlsRaw = await checkHomeUrls(origin);
+
+  // Check 6
+  onProgress?.({ phase: 'selfReg', done: 0, total: 1, label: 'Testing self-registration…' });
+  const selfReg = await checkSelfRegistration(endpoint, context, token);
+
+  // Build accessible list for Check 7
   const accessible = Object.entries(getItems)
     .filter(([, r]) => r.state === 'SUCCESS' && r.total > 0)
     .map(([name, r]) => ({ name, total: r.total }))
     .sort((a, b) => b.total - a.total);
 
+  // Check 7
+  onProgress?.({ phase: 'graphql', done: 0, total: 1, label: 'Testing GraphQL bypass…' });
+  const graphqlBypassRaw = await checkGraphQLBypass(endpoint, context, token, accessible);
+
+  // Compact summaries
   const errors = Object.entries(getItems)
     .filter(([, r]) => r.state === 'ERROR')
     .map(([name, r]) => ({ name, error: r.error }));
@@ -196,6 +366,14 @@ export async function runCoreChecks(endpoint, context, token, onProgress) {
   const bypassWorks = Object.entries(sortByBypass)
     .filter(([, r]) => r.bypassWorks)
     .map(([name, r]) => ({ name, total: r.total }));
+
+  const listViews = Object.entries(listViewsRaw)
+    .filter(([, r]) => r.count > 0)
+    .map(([name, r]) => ({ name, count: r.count }))
+    .sort((a, b) => b.count - a.count);
+
+  const homeUrls  = homeUrlsRaw.filter(h => h.exposed);
+  const graphqlBypass = graphqlBypassRaw.filter(r => r.bypassWorks);
 
   return {
     startedAt,
@@ -205,6 +383,10 @@ export async function runCoreChecks(endpoint, context, token, onProgress) {
     accessible,
     errors,
     bypassWorks,
+    listViews,
+    homeUrls,
+    selfReg,
+    graphqlBypass,
     configDataState: 'SUCCESS',
   };
 }

@@ -58,72 +58,108 @@ function renderProgress(progress) {
   if (!progress) { hide('scan-progress'); return; }
 
   show('scan-progress');
-  const pct = progress.total > 0
+  const pct = (progress.total > 0)
     ? Math.round((progress.done / progress.total) * 100)
     : 0;
   const fill = document.getElementById('progress-fill');
   if (fill) fill.style.width = pct + '%';
-
-  const label = progress.phase === 'getConfigData'
-    ? 'Fetching object list…'
-    : `Checking objects: ${progress.done} / ${progress.total}`;
-  setText('progress-label', label);
+  setText('progress-label', progress.label ?? 'Running…');
 }
 
 // --- Results rendering ---
+
+function renderObjList(listId, items, valueKey, valueFn) {
+  const list = document.getElementById(listId);
+  if (!list) return;
+  list.innerHTML = '';
+  if (!items?.length) { hide(listId); return; }
+  show(listId);
+  for (const item of items) {
+    const row = document.createElement('div');
+    row.className = 'obj-row';
+    row.innerHTML = `<span class="obj-name">${item.name ?? item.path ?? item.label ?? ''}</span>`
+                  + `<span class="obj-count">${valueFn ? valueFn(item) : fmtCount(item[valueKey])}</span>`;
+    list.appendChild(row);
+  }
+}
+
+function showFindingRow(rowId, valId, count, singular, plural) {
+  if (count > 0) {
+    setText(valId, `${count} ${count === 1 ? singular : plural}`);
+    show(rowId);
+  } else {
+    hide(rowId);
+  }
+}
 
 function renderResults(result) {
   if (!result) { hide('scan-results'); return; }
 
   show('scan-results');
 
-  const duration = result.finishedAt - result.startedAt;
-  setText('val-scan-duration', fmtDuration(duration));
+  setText('val-scan-duration', fmtDuration(result.finishedAt - result.startedAt));
   setText('val-objects-count', fmtCount(result.objectCount));
 
-  // Accessible count badge
+  // Accessible objects (Check 2)
   const accEl = document.getElementById('val-accessible-count');
   if (accEl) {
     const count = result.accessible?.length ?? 0;
-    accEl.textContent = count === 0 ? '0 (none exposed)' : `${count} object${count > 1 ? 's' : ''}`;
+    accEl.textContent = count === 0 ? '0 — none exposed' : `${count} object${count > 1 ? 's' : ''}`;
     accEl.className   = 'value badge ' + (count > 0 ? 'badge-finding' : 'badge-captured');
   }
+  renderObjList('accessible-list', result.accessible, 'total', i => fmtCount(i.total) + ' records');
 
-  // Bypass row
-  const bypassCount = result.bypassWorks?.length ?? 0;
-  if (bypassCount > 0) {
-    setText('val-bypass-count', `${bypassCount} object${bypassCount > 1 ? 's' : ''} bypass 2k limit`);
-    show('row-bypass');
-  } else {
-    hide('row-bypass');
-  }
+  // sortBy bypass (Check 3)
+  showFindingRow('row-bypass', 'val-bypass-count',
+    result.bypassWorks?.length ?? 0, 'object bypasses 2k limit', 'objects bypass 2k limit');
 
-  // Error row
-  const errCount = result.errors?.length ?? 0;
-  if (errCount > 0) {
-    setText('val-errors-count', `${errCount} object${errCount > 1 ? 's' : ''} errored`);
-    show('row-errors');
-  } else {
-    hide('row-errors');
-  }
+  // Errors
+  showFindingRow('row-errors', 'val-errors-count',
+    result.errors?.length ?? 0, 'object errored', 'objects errored');
 
-  // Accessible objects list
-  const list = document.getElementById('accessible-list');
-  if (list) {
-    list.innerHTML = '';
-    const items = result.accessible ?? [];
-    if (items.length > 0) {
-      show('accessible-list');
-      for (const { name, total } of items) {
+  // List Views (Check 4)
+  showFindingRow('row-listviews', 'val-listviews-count',
+    result.listViews?.length ?? 0, 'object exposes list views', 'objects expose list views');
+
+  // Admin URLs (Check 5)
+  const homeCount = result.homeUrls?.length ?? 0;
+  if (homeCount > 0) {
+    setText('val-homeurls-count', `${homeCount} path${homeCount > 1 ? 's' : ''} exposed`);
+    show('row-homeurls');
+    const urlList = document.getElementById('homeurl-list');
+    if (urlList) {
+      urlList.innerHTML = '';
+      show('homeurl-list');
+      for (const { path, label, status } of result.homeUrls) {
         const row = document.createElement('div');
         row.className = 'obj-row';
-        row.innerHTML = `<span class="obj-name">${name}</span><span class="obj-count">${fmtCount(total)}</span>`;
-        list.appendChild(row);
+        row.innerHTML = `<span class="obj-name" title="${path}">${label}</span>`
+                      + `<span class="obj-count">${status}</span>`;
+        urlList.appendChild(row);
       }
-    } else {
-      hide('accessible-list');
     }
+  } else {
+    hide('row-homeurls');
+    hide('homeurl-list');
   }
+
+  // Self-registration (Check 6)
+  const sr = result.selfReg;
+  if (sr) {
+    show('row-selfreg');
+    const srEl = document.getElementById('val-selfreg');
+    if (srEl) {
+      if (sr.enabled === true)  { srEl.textContent = '⚠ Enabled';       srEl.className = 'value badge badge-finding'; }
+      if (sr.enabled === false) { srEl.textContent = '✓ Not enabled';   srEl.className = 'value badge badge-captured'; }
+      if (sr.enabled === null)  { srEl.textContent = 'Inconclusive';    srEl.className = 'value badge badge-pending'; }
+    }
+  } else {
+    hide('row-selfreg');
+  }
+
+  // GraphQL bypass (Check 7)
+  showFindingRow('row-graphql', 'val-graphql-count',
+    result.graphqlBypass?.length ?? 0, 'object bypasses via page 21', 'objects bypass via page 21');
 }
 
 // --- Poll session storage while scan is running ---
