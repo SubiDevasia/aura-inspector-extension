@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+  <title>Aura Inspector</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div class="header-title">
+      <span class="logo">⚡</span>
+      <h1>Aura Inspector</h1>
+    </div>
+    <span class="version">v0.2.0</span>
+  </header>
+
+  <main>
+    <!-- Active tab is NOT a SF site -->
+    <div id="panel-none" class="panel hidden">
+      <p class="no-site">Not a Salesforce Experience Cloud site.</p>
+      <p class="hint">Navigate to a site on one of:<br>
+        <code>*.my.site.com</code><br>
+        <code>*.vf.force.com</code><br>
+        <code>*.my.salesforce-sites.com</code><br>
+        <code>*.my.salesforce.com</code><br>
+        or a custom domain (auto-detected via page fingerprint / network)
+      </p>
+    </div>
+
+    <!-- Active tab IS a SF site -->
+    <div id="panel-sf" class="panel hidden">
+
+      <!-- Site identity -->
+      <div class="field">
+        <span class="label">Host</span>
+        <span id="val-host" class="value mono"></span>
+      </div>
+      <div class="field">
+        <span class="label">App Path</span>
+        <span id="val-app-path" class="value mono"></span>
+      </div>
+      <div class="field">
+        <span class="label">App Name</span>
+        <span id="val-app-name" class="value"></span>
+      </div>
+      <div class="field">
+        <span class="label">Detected via</span>
+        <span id="val-via" class="value badge"></span>
+      </div>
+
+      <!-- Chunk 2: Aura endpoint + context capture status -->
+      <div class="section-divider"></div>
+      <div class="field">
+        <span class="label">Aura URL</span>
+        <span id="val-aura-endpoint" class="value mono small"></span>
+      </div>
+      <div class="field">
+        <span class="label">Context</span>
+        <span id="val-context-status" class="value badge badge-pending">Pending</span>
+      </div>
+      <div class="field">
+        <span class="label">Token</span>
+        <span id="val-token-status" class="value badge badge-pending">Pending</span>
+      </div>
+
+      <!-- Auth (placeholder, Chunk 5) -->
+      <div class="section-divider"></div>
+      <div class="field">
+        <span class="label">Auth</span>
+        <span id="val-auth" class="value badge badge-pending">Checking...</span>
+      </div>
+
+      <button id="btn-scan" disabled>Run Scan</button>
+    </div>
+
+    <!-- Force enable toggle -->
+    <div id="force-enable-section" class="toggle-section hidden">
+      <label class="toggle-label" for="force-enable-toggle">
+        <span class="toggle-switch">
+          <input type="checkbox" id="force-enable-toggle">
+          <span class="slider"></span>
+        </span>
+        Force enable — this is a Salesforce site
+      </label>
+    </div>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
