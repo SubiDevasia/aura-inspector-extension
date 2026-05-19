@@ -11,7 +11,6 @@
     return origin + (appPath === '/' ? '' : appPath) + '/s/sfsites/aura';
   }
 
-  // Balanced-brace JSON extraction at a known start offset
   function extractJsonAt(text, start) {
     let depth = 0;
     for (let i = start; i < text.length; i++) {
@@ -23,7 +22,6 @@
     return null;
   }
 
-  // Scan inline <script> tags for embedded Aura.context / Aura.token
   function domScan() {
     for (const el of document.querySelectorAll('script:not([src])')) {
       const text = el.textContent;
@@ -52,8 +50,6 @@
     }
   }
 
-  // Inject bridge into page context NOW (document_start) so XHR/fetch are
-  // patched before Aura makes its first network calls
   function injectBridge() {
     if (document.getElementById('__auraInspectorBridge')) return;
     const script = document.createElement('script');
@@ -75,6 +71,35 @@
     }).catch(() => {});
   }
 
+  // Register listener FIRST — before injectBridge() and before the async run().
+  // Bridge may post AURA_DATA before run() resolves its GET_TAB_INFO await;
+  // captured data is stored immediately and report() fires once endpoint is known.
+  window.addEventListener('message', async (event) => {
+    if (event.source !== window) return;
+    if (event.data?.source !== BRIDGE_SRC || event.data?.type !== 'AURA_DATA') return;
+
+    let updated = false;
+    if (event.data.auraContext && !captured.auraContext) {
+      captured.auraContext = event.data.auraContext;
+      updated = true;
+    }
+    if (event.data.auraToken && !captured.auraToken) {
+      captured.auraToken = event.data.auraToken;
+      updated = true;
+    }
+
+    if (updated && endpoint) {
+      reported = false;
+      await report();
+    }
+    // If endpoint not yet set, run() will call report() after it resolves —
+    // picking up whatever captured contains at that point.
+  });
+
+  // Inject bridge before page scripts finish (document_start) so XHR/fetch
+  // patching happens before Aura makes its first network calls.
+  injectBridge();
+
   async function run() {
     const response = await chrome.runtime.sendMessage({ type: 'GET_TAB_INFO' }).catch(() => null);
     if (!response?.info) return;
@@ -82,35 +107,13 @@
     const { origin, appPath } = response.info;
     endpoint = response.info.auraEndpoint ?? buildEndpoint(origin, appPath);
 
+    // domScan picks up anything in inline scripts
     domScan();
+
+    // Report — includes any bridge data already captured before run() resolved
     await report();
-
-    // Listen for data posted by page-bridge.js
-    window.addEventListener('message', async (event) => {
-      if (event.source !== window) return;
-      if (event.data?.source !== BRIDGE_SRC || event.data?.type !== 'AURA_DATA') return;
-
-      let updated = false;
-      if (event.data.auraContext && !captured.auraContext) {
-        captured.auraContext = event.data.auraContext;
-        updated = true;
-      }
-      if (event.data.auraToken && !captured.auraToken) {
-        captured.auraToken = event.data.auraToken;
-        updated = true;
-      }
-
-      if (updated) {
-        reported = false;
-        await report();
-      }
-    });
   }
 
-  // Inject bridge immediately — before page scripts run
-  injectBridge();
-
-  // Run DOM scan + GET_TAB_INFO after DOM is ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', run);
   } else {

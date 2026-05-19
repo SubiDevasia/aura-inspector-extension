@@ -39,12 +39,27 @@ function renderBadge(id, captured, capturedLabel, pendingLabel) {
   el.className   = 'value badge ' + (captured ? 'badge-captured' : 'badge-pending');
 }
 
+function renderContextBadge(id, value, checked, notFoundLabel = 'Not found') {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (value) {
+    el.textContent = '✓ Captured';
+    el.className   = 'value badge badge-captured';
+  } else if (checked) {
+    el.textContent = notFoundLabel;
+    el.className   = 'value badge badge-not-found';
+  } else {
+    el.textContent = 'Pending';
+    el.className   = 'value badge badge-pending';
+  }
+}
+
 // --- Scan button state ---
 
 function setScanButton(info) {
   const btn = document.getElementById('btn-scan');
   if (!btn) return;
-  const canScan = !!info?.auraContext;
+  const canScan = !!info?.auraEndpoint;
   const running = info?.scanState === 'running';
 
   btn.disabled    = !canScan || running;
@@ -57,7 +72,7 @@ function setAuthScanButton(info) {
   const btn = document.getElementById('btn-auth-scan');
   if (!btn) return;
   const hasCookie = !!(document.getElementById('cookie-input')?.value?.trim());
-  const canScan   = !!info?.auraContext && hasCookie;
+  const canScan   = !!info?.auraEndpoint && hasCookie;
   const running   = info?.authScanState === 'running';
 
   btn.disabled    = !canScan || running;
@@ -308,8 +323,8 @@ function renderSF(info) {
   const endpoint = info.auraEndpoint ?? buildEndpoint(info.origin, info.appPath);
   setText('val-aura-endpoint', endpoint);
 
-  renderBadge('val-context-status', !!info.auraContext, '✓ Captured', 'Pending');
-  renderBadge('val-token-status',   !!info.auraToken,   '✓ Captured', 'Pending');
+  renderContextBadge('val-context-status', info.auraContext, info.auraContextChecked, 'Not found');
+  renderContextBadge('val-token-status',   info.auraToken,   info.auraContextChecked, 'None — guest');
 
   setScanButton(info);
   setAuthScanButton(info);
