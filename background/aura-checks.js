@@ -48,6 +48,26 @@ async function auraPost(endpoint, context, token, actions, cookieHeader = null) 
 }
 
 // ---------------------------------------------------------------------------
+// Bootstrap: get real Aura context from server using empty context
+// Every Aura POST response includes the server's context — no page injection needed
+// ---------------------------------------------------------------------------
+
+export async function bootstrapAuraContext(endpoint, token = 'null', cookieHeader = null) {
+  try {
+    const actions = [{
+      id: '0;b',
+      descriptor: 'serviceComponent://ui.force.components.controllers.hostConfig.HostConfigController/ACTION$getConfigData',
+      callingDescriptor: 'UNKNOWN',
+      params: {},
+    }];
+    const response = await auraPost(endpoint, {}, token, actions, cookieHeader);
+    return response.context ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Check 1: getConfigData
 // ---------------------------------------------------------------------------
 
@@ -60,18 +80,22 @@ export async function checkGetConfigData(endpoint, context, token, cookieHeader 
   }];
 
   const response = await auraPost(endpoint, context, token, actions, cookieHeader);
-  const action   = response.actions?.[0];
+
+  // Server always returns a context — use it to bootstrap when caller had none
+  const serverContext = response.context ?? null;
+  const action        = response.actions?.[0];
 
   if (action?.state !== 'SUCCESS') {
     return {
       state: 'ERROR',
       error: action?.error?.[0]?.message ?? `state=${action?.state ?? 'unknown'}`,
       objects: [],
+      serverContext,
     };
   }
 
   const objects = Object.keys(action.returnValue?.apiNamesToKeyPrefix ?? {}).sort();
-  return { state: 'SUCCESS', objects };
+  return { state: 'SUCCESS', objects, serverContext };
 }
 
 // ---------------------------------------------------------------------------
@@ -335,9 +359,14 @@ export async function runCoreChecks(endpoint, context, token, onProgress, cookie
   const startedAt = Date.now();
   const origin    = new URL(endpoint).origin;
 
-  // Check 1
+  // Check 1 — always use {} context so server bootstraps fresh.
+  // Sending a stored context with aura.token='null' causes HTTP 400 on sites
+  // that enforce CSRF validation for non-empty contexts.
   onProgress?.({ phase: 'getConfigData', done: 0, total: 1, label: 'Fetching object list…' });
-  const configData = await checkGetConfigData(endpoint, context, token, cookieHeader);
+  const configData = await checkGetConfigData(endpoint, {}, token, cookieHeader);
+
+  // Always use the server-returned context for all subsequent checks.
+  const effectiveContext = configData.serverContext ?? context ?? {};
 
   if (configData.state !== 'SUCCESS' || configData.objects.length === 0) {
     return {
@@ -345,6 +374,7 @@ export async function runCoreChecks(endpoint, context, token, onProgress, cookie
       accessible: [], errors: [], bypassWorks: [],
       listViews: [], homeUrls: [], selfReg: null, graphqlBypass: [],
       configDataState: configData.state, configDataError: configData.error,
+      bootstrappedContext: configData.serverContext ?? null,
     };
   }
 
@@ -352,18 +382,18 @@ export async function runCoreChecks(endpoint, context, token, onProgress, cookie
 
   // Check 2
   const getItems = await checkGetItems(
-    endpoint, context, token, objects,
+    endpoint, effectiveContext, token, objects,
     (done, total) => onProgress?.({ phase: 'getItems', done, total, label: `Probing objects: ${done}/${total}` }),
     cookieHeader,
   );
 
   // Check 3
   onProgress?.({ phase: 'sortBy', done: 0, total: 1, label: 'Testing sortBy bypass…' });
-  const sortByBypass = await checkSortByBypass(endpoint, context, token, getItems, cookieHeader);
+  const sortByBypass = await checkSortByBypass(endpoint, effectiveContext, token, getItems, cookieHeader);
 
   // Check 4
   const listViewsRaw = await checkGetInitialListViews(
-    endpoint, context, token, objects,
+    endpoint, effectiveContext, token, objects,
     (done, total) => onProgress?.({ phase: 'listViews', done, total, label: `Checking list views: ${done}/${total}` }),
     cookieHeader,
   );
@@ -374,7 +404,7 @@ export async function runCoreChecks(endpoint, context, token, onProgress, cookie
 
   // Check 6
   onProgress?.({ phase: 'selfReg', done: 0, total: 1, label: 'Testing self-registration…' });
-  const selfReg = await checkSelfRegistration(endpoint, context, token, cookieHeader);
+  const selfReg = await checkSelfRegistration(endpoint, effectiveContext, token, cookieHeader);
 
   // Build accessible list for Check 7
   const accessible = Object.entries(getItems)
@@ -384,7 +414,7 @@ export async function runCoreChecks(endpoint, context, token, onProgress, cookie
 
   // Check 7
   onProgress?.({ phase: 'graphql', done: 0, total: 1, label: 'Testing GraphQL bypass…' });
-  const graphqlBypassRaw = await checkGraphQLBypass(endpoint, context, token, accessible, cookieHeader);
+  const graphqlBypassRaw = await checkGraphQLBypass(endpoint, effectiveContext, token, accessible, cookieHeader);
 
   // Compact summaries
   const errors = Object.entries(getItems)
@@ -405,9 +435,9 @@ export async function runCoreChecks(endpoint, context, token, onProgress, cookie
 
   return {
     startedAt,
-    finishedAt:      Date.now(),
+    finishedAt:          Date.now(),
     endpoint,
-    objectCount:     objects.length,
+    objectCount:         objects.length,
     accessible,
     errors,
     bypassWorks,
@@ -415,6 +445,7 @@ export async function runCoreChecks(endpoint, context, token, onProgress, cookie
     homeUrls,
     selfReg,
     graphqlBypass,
-    configDataState: 'SUCCESS',
+    configDataState:     'SUCCESS',
+    bootstrappedContext: configData.serverContext ?? null,
   };
 }

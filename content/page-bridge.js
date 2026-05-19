@@ -10,6 +10,10 @@
     window.postMessage({ source: SRC, ...data }, '*');
   }
 
+  function log(msg, level = 'info') {
+    post({ type: 'LOG', source: 'bridge', level, msg });
+  }
+
   // Strip Aura security prefix (e.g. ";/*ERROR*/") before parsing
   function safeJson(str) {
     if (typeof str !== 'string') return str ?? null;
@@ -34,9 +38,36 @@
     return out;
   }
 
+  log(`loaded | $A=${!!window.$A} Aura=${!!window.Aura}`);
+
   const immediate = readGlobals();
+  log(`readGlobals → context=${!!immediate.auraContext} token=${!!immediate.auraToken}`);
+
   if (immediate.auraContext || immediate.auraToken) {
     post({ type: 'AURA_DATA', ...immediate });
+  }
+
+  function extractTokenFromParams(bodyOrSearch) {
+    try {
+      const p = new URLSearchParams(typeof bodyOrSearch === 'string' ? bodyOrSearch : '');
+      const t = p.get('aura.token');
+      return (t && t !== 'null' && t !== 'undefined') ? t : null;
+    } catch { return null; }
+  }
+
+  function extractTokenFromUrl(url) {
+    try {
+      const u = new URL(url, location.href);
+      const t = u.searchParams.get('aura.token');
+      return (t && t !== 'null' && t !== 'undefined') ? t : null;
+    } catch { return null; }
+  }
+
+  function postAuraData(out, source) {
+    if (out.auraContext || out.auraToken) {
+      log(`${source} → context=${!!out.auraContext} token=${!!out.auraToken}`);
+      post({ type: 'AURA_DATA', ...out });
+    }
   }
 
   // --- 2. XHR interception ---
@@ -49,35 +80,50 @@
   };
 
   XMLHttpRequest.prototype.send = function (body) {
-    this.addEventListener('load', function () {
-      if (!this.__auraUrl?.includes('/aura')) return;
-      const json = safeJson(this.responseText);
-      if (!json) return;
-      const out = {};
-      if (json.context) out.auraContext = json.context;
-      if (json.token)   out.auraToken   = String(json.token);
-      if (out.auraContext || out.auraToken) post({ type: 'AURA_DATA', ...out });
-    });
+    if (this.__auraUrl?.includes('/aura')) {
+      // Extract token from request body before it's sent
+      const reqToken = extractTokenFromParams(body) ?? extractTokenFromUrl(this.__auraUrl);
+      if (reqToken) postAuraData({ auraToken: reqToken }, 'XHR req');
+
+      this.addEventListener('load', function () {
+        const json = safeJson(this.responseText);
+        if (!json) return;
+        const out = {};
+        if (json.context) out.auraContext = json.context;
+        if (json.token)   out.auraToken   = String(json.token);
+        postAuraData(out, 'XHR resp');
+      });
+    }
     return origSend.call(this, body);
   };
 
   // --- 3. fetch interception ---
   const origFetch = window.fetch;
   window.fetch = async function (...args) {
+    const url    = typeof args[0] === 'string' ? args[0] : (args[0]?.url ?? '');
+    const isAura = url.includes('/aura');
+
+    if (isAura) {
+      // Extract token from request before awaiting response
+      const init     = args[1] ?? {};
+      const reqBody  = typeof init.body === 'string' ? init.body : (args[0]?.body ?? null);
+      const reqToken = extractTokenFromParams(reqBody) ?? extractTokenFromUrl(url);
+      if (reqToken) postAuraData({ auraToken: reqToken }, 'fetch req');
+    }
+
     const res = await origFetch.apply(this, args);
-    try {
-      const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url ?? '');
-      if (url.includes('/aura')) {
-        res.clone().text().then(text => {
-          const json = safeJson(text);
-          if (!json) return;
-          const out = {};
-          if (json.context) out.auraContext = json.context;
-          if (json.token)   out.auraToken   = String(json.token);
-          if (out.auraContext || out.auraToken) post({ type: 'AURA_DATA', ...out });
-        }).catch(() => {});
-      }
-    } catch {}
+
+    if (isAura) {
+      res.clone().text().then(text => {
+        const json = safeJson(text);
+        if (!json) return;
+        const out = {};
+        if (json.context) out.auraContext = json.context;
+        if (json.token)   out.auraToken   = String(json.token);
+        postAuraData(out, 'fetch resp');
+      }).catch(() => {});
+    }
+
     return res;
   };
 })();

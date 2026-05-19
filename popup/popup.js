@@ -54,6 +54,58 @@ function renderContextBadge(id, value, checked, notFoundLabel = 'Not found') {
   }
 }
 
+// --- Captured value show buttons ---
+
+function updateShowButtons(info) {
+  const ctxBtn = document.getElementById('btn-show-context');
+  const tokBtn = document.getElementById('btn-show-token');
+  if (ctxBtn) ctxBtn.classList.toggle('hidden', !info?.auraContext);
+  if (tokBtn) tokBtn.classList.toggle('hidden', !info?.auraToken);
+}
+
+// --- Modal ---
+
+let modalCopyValue = '';
+
+function openModal(title, value) {
+  const display = typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
+  modalCopyValue = display;
+  setText('modal-title', title);
+  const content = document.getElementById('modal-content');
+  if (content) content.textContent = display;
+  document.getElementById('value-modal')?.classList.remove('hidden');
+}
+
+function closeModal() {
+  document.getElementById('value-modal')?.classList.add('hidden');
+}
+
+document.getElementById('btn-modal-close')?.addEventListener('click', closeModal);
+document.getElementById('value-modal')?.addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeModal();
+});
+document.getElementById('btn-modal-copy')?.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(modalCopyValue);
+    const btn = document.getElementById('btn-modal-copy');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  } catch {}
+});
+document.getElementById('btn-show-context')?.addEventListener('click', async () => {
+  const tab = currentTab;
+  if (!tab) return;
+  const r = await chrome.storage.session.get(`tab:${tab.id}`);
+  const info = r[`tab:${tab.id}`];
+  if (info?.auraContext) openModal('Aura Context', info.auraContext);
+});
+document.getElementById('btn-show-token')?.addEventListener('click', async () => {
+  const tab = currentTab;
+  if (!tab) return;
+  const r = await chrome.storage.session.get(`tab:${tab.id}`);
+  const info = r[`tab:${tab.id}`];
+  if (info?.auraToken) openModal('Aura Token', info.auraToken);
+});
+
 // --- Scan button state ---
 
 function setScanButton(info) {
@@ -286,19 +338,53 @@ function stopAuthPolling() {
   if (authPollTimer) { clearInterval(authPollTimer); authPollTimer = null; }
 }
 
+// --- Context bootstrap poll ---
+// If context is still pending when popup opens, poll until SW bootstrap resolves.
+
+let contextPollTimer = null;
+
+function stopContextPoll() {
+  if (contextPollTimer) { clearInterval(contextPollTimer); contextPollTimer = null; }
+}
+
+function startContextPoll(tabId, deadline) {
+  stopContextPoll();
+  contextPollTimer = setInterval(async () => {
+    if (Date.now() > deadline) { stopContextPoll(); return; }
+    const r    = await chrome.storage.session.get(`tab:${tabId}`);
+    const info = r[`tab:${tabId}`];
+    if (!info) { stopContextPoll(); return; }
+    if (info.auraContextChecked) {
+      stopContextPoll();
+      renderContextBadge('val-context-status', info.auraContext, info.auraContextChecked, 'Not found');
+      renderContextBadge('val-token-status',   info.auraToken,   info.auraContextChecked, 'undefined');
+      updateShowButtons(info);
+      setScanButton(info);
+    }
+  }, 500);
+}
+
 // --- Main init ---
 
 async function init() {
   stopPolling();
   stopAuthPolling();
+  stopContextPoll();
   currentTab = await getActiveTab();
   if (!currentTab) { show('panel-none'); renderForceToggle(false, true); return; }
 
   const r    = await chrome.storage.session.get(`tab:${currentTab.id}`);
   const info = r[`tab:${currentTab.id}`] ?? null;
 
-  if (info) renderSF(info);
-  else renderNone();
+  if (info) {
+    renderSF(info);
+    // If bootstrap hasn't resolved yet, poll for up to 15s
+    if (!info.auraContextChecked) {
+      startContextPoll(currentTab.id, Date.now() + 15_000);
+    }
+  } else {
+    renderNone();
+  }
 }
 
 function renderNone() {
@@ -324,7 +410,8 @@ function renderSF(info) {
   setText('val-aura-endpoint', endpoint);
 
   renderContextBadge('val-context-status', info.auraContext, info.auraContextChecked, 'Not found');
-  renderContextBadge('val-token-status',   info.auraToken,   info.auraContextChecked, 'None — guest');
+  renderContextBadge('val-token-status',   info.auraToken,   info.auraContextChecked, 'undefined');
+  updateShowButtons(info);
 
   setScanButton(info);
   setAuthScanButton(info);
@@ -501,6 +588,128 @@ async function handleExportCSV() {
   triggerDownload(csv, filename, 'text/csv');
 }
 
+// --- Debug log panel ---
+
+const LEVEL_CLASS = { info: 'log-info', warn: 'log-warn', error: 'log-error' };
+let logRefreshTimer  = null;
+let logRecordTimer   = null;
+let isRecording      = false;
+
+async function refreshLog() {
+  const r = await chrome.storage.session.get(['__log__', '__log_session_start__']);
+  renderLogs(r['__log__'] ?? [], r['__log_session_start__'] ?? null);
+}
+
+function renderLogs(entries, sessionStart) {
+  const el        = document.getElementById('log-entries');
+  const statusEl  = document.getElementById('log-rec-status');
+  if (!el) return;
+
+  if (statusEl) {
+    if (isRecording && sessionStart) {
+      const secs = Math.floor((Date.now() - sessionStart) / 1000);
+      const mm   = String(Math.floor(secs / 60)).padStart(2, '0');
+      const ss   = String(secs % 60).padStart(2, '0');
+      statusEl.textContent = `● Recording ${mm}:${ss}`;
+      statusEl.className   = 'log-rec-status recording';
+    } else if (sessionStart && entries.length) {
+      const start = new Date(sessionStart).toTimeString().slice(0, 8);
+      statusEl.textContent = `Session started ${start} — ${entries.length} entries`;
+      statusEl.className   = 'log-rec-status';
+    } else {
+      statusEl.textContent = 'Not recording';
+      statusEl.className   = 'log-rec-status';
+    }
+  }
+
+  if (!entries.length) {
+    el.innerHTML = '<div class="log-empty">No entries. Press ● Record to start.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  for (const { ts, source, level, msg } of [...entries].reverse()) {
+    const row = document.createElement('div');
+    row.className = 'log-row ' + (LEVEL_CLASS[level] ?? 'log-info');
+    const time = new Date(ts).toTimeString().slice(0, 8);
+    const ms   = String(ts % 1000).padStart(3, '0');
+    row.innerHTML =
+      `<span class="log-time">${time}.${ms}</span>` +
+      `<span class="log-source">${source}</span>` +
+      `<span class="log-msg">${msg}</span>`;
+    el.appendChild(row);
+  }
+}
+
+async function handleToggleLog() {
+  const panel = document.getElementById('log-panel');
+  const btn   = document.getElementById('btn-toggle-log');
+  if (!panel || !btn) return;
+  const opening = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !opening);
+  btn.textContent = opening ? '▼ Debug Log' : '▶ Debug Log';
+  if (opening) {
+    await refreshLog();
+    logRefreshTimer = setInterval(refreshLog, 1000);
+  } else {
+    clearInterval(logRefreshTimer);
+    logRefreshTimer = null;
+  }
+}
+
+async function handleToggleRecord() {
+  const btn = document.getElementById('btn-log-record');
+  isRecording = !isRecording;
+  await chrome.runtime.sendMessage({ type: 'SET_LOG_ENABLED', enabled: isRecording });
+  if (btn) {
+    btn.textContent = isRecording ? '■ Stop' : '○ Record';
+    btn.className   = isRecording ? 'btn-log-record recording' : 'btn-log-record';
+  }
+  await refreshLog();
+}
+
+async function handleClearLog() {
+  await chrome.storage.session.remove('__log__');
+  renderLogs([], null);
+}
+
+async function handleExportLogs() {
+  const r     = await chrome.storage.session.get(['__log__', '__log_session_start__']);
+  const entries = r['__log__'] ?? [];
+  const start   = r['__log_session_start__'];
+  if (!entries.length) return;
+
+  const header = [
+    'Aura Inspector — Debug Log Export',
+    `Session start : ${start ? new Date(start).toISOString() : 'unknown'}`,
+    `Export time   : ${new Date().toISOString()}`,
+    `Total entries : ${entries.length}`,
+    '',
+    'TIME             SOURCE      LEVEL  MESSAGE',
+    '---------------  ----------  -----  ' + '-'.repeat(60),
+  ].join('\n');
+
+  const lines = entries.map(({ ts, source, level, msg }) => {
+    const t   = new Date(ts).toISOString().slice(11, 23);
+    const src = source.padEnd(10);
+    const lvl = level.padEnd(5);
+    return `${t}  ${src}  ${lvl}  ${msg}`;
+  });
+
+  const content  = header + '\n' + lines.join('\n');
+  const filename = `aura-inspector-log-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.log`;
+  triggerDownload(content, filename, 'text/plain');
+}
+
+// Sync recording state on popup open
+chrome.storage.session.get('__log_enabled__').then(r => {
+  isRecording = r['__log_enabled__'] ?? false;
+  const btn = document.getElementById('btn-log-record');
+  if (btn) {
+    btn.textContent = isRecording ? '■ Stop' : '○ Record';
+    btn.className   = isRecording ? 'btn-log-record recording' : 'btn-log-record';
+  }
+});
+
 init();
 document.getElementById('btn-scan')?.addEventListener('click', handleScanClick);
 document.getElementById('btn-auth-scan')?.addEventListener('click', handleAuthScanClick);
@@ -508,4 +717,8 @@ document.getElementById('btn-auto-cookie')?.addEventListener('click', handleAuto
 document.getElementById('cookie-input')?.addEventListener('input', refreshAuthScanButton);
 document.getElementById('btn-export-json')?.addEventListener('click', handleExportJSON);
 document.getElementById('btn-export-csv')?.addEventListener('click', handleExportCSV);
+document.getElementById('btn-toggle-log')?.addEventListener('click', handleToggleLog);
+document.getElementById('btn-log-record')?.addEventListener('click', handleToggleRecord);
+document.getElementById('btn-clear-log')?.addEventListener('click', handleClearLog);
+document.getElementById('btn-export-logs')?.addEventListener('click', handleExportLogs);
 document.getElementById('force-enable-toggle')?.addEventListener('change', e => handleToggleChange(e.target.checked));
